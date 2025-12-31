@@ -6,6 +6,7 @@ from typing import Optional
 import requests
 from web3 import Web3
 from web3.exceptions import BlockNotFound
+from web3.middleware import geth_poa_middleware
 
 
 CONTRACT_ADDRESS = os.getenv("BSC_CONTRACT", "0x56a3bF66db83e59d13DFED48205Bb84c33B08d1b").lower()
@@ -83,6 +84,8 @@ def process_block(w3: Web3, block_number: int) -> None:
 
 def main() -> None:
     w3 = Web3(Web3.HTTPProvider(BSC_RPC_URL, request_kwargs={"timeout": 20}))
+    # BSC uses a PoA consensus; inject middleware so block extraData is accepted.
+    w3.middleware_onion.inject(geth_poa_middleware, layer=0)
     if not w3.is_connected():
         raise RuntimeError(f"Cannot connect to BSC RPC at {BSC_RPC_URL}")
 

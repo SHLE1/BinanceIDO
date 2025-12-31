@@ -24,3 +24,4 @@ python monitor.py
 ```
 
 The script starts at the current head block and checks each new block for transactions whose `to` address matches `BSC_CONTRACT` and whose `input` begins with `BSC_METHOD_ID`. When a match is found, a concise message is sent to the configured Telegram chat.
+Note: BSC is PoA; the script already injects `geth_poa_middleware` so block parsing succeeds.
