@@ -1,0 +1,24 @@
+[Unit]
+Description=Binance IDO Monitor
+After=network.target
+
+[Service]
+# 修改为你的用户名
+User=root
+# 修改为你的项目路径
+WorkingDirectory=/root/BinanceIDO
+# 如果使用 uv
+ExecStart=/root/.cargo/bin/uv run monitor.py
+# 如果使用系统 python
+# ExecStart=/usr/bin/python3 monitor.py
+
+# 自动重启配置
+Restart=always
+RestartSec=10
+
+# 环境配置（如果不在项目目录下使用 .env 文件，可以在这里设置环境变量）
+# Environment="TELEGRAM_BOT_TOKEN=your_token"
+# Environment="TELEGRAM_CHAT_ID=your_chat_id"
+
+[Install]
+WantedBy=multi-user.target
