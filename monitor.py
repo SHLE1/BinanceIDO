@@ -3,11 +3,15 @@ import time
 import logging
 from typing import Optional
 
+from dotenv import load_dotenv
 import requests
 from web3 import Web3
 from web3.exceptions import BlockNotFound
 from web3.middleware import geth_poa_middleware
 
+
+# Load environment variables from a local .env file if present
+load_dotenv()
 
 CONTRACT_ADDRESS = os.getenv("BSC_CONTRACT", "0x56a3bF66db83e59d13DFED48205Bb84c33B08d1b").lower()
 METHOD_ID = os.getenv("BSC_METHOD_ID", "0xfd5c9779").lower()
@@ -15,6 +19,7 @@ BSC_RPC_URL = os.getenv("BSC_RPC_URL", "https://bsc-dataseed.binance.org")
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "3.0"))
 START_BLOCK = os.getenv("START_BLOCK")
 EXIT_AFTER_CATCHUP = os.getenv("EXIT_AFTER_CATCHUP", "false").lower() in {"1", "true", "yes"}
+LOG_PROGRESS_INTERVAL = float(os.getenv("LOG_PROGRESS_INTERVAL", "60.0"))
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -34,7 +39,7 @@ def send_telegram(text: str) -> None:
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    resp = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text})
+    resp = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"})
     if not resp.ok:
         logger.warning("Failed to send Telegram message: %s", resp.text)
 
@@ -45,10 +50,12 @@ def describe_tx(w3: Web3, block_number: int, tx) -> str:
     hash_hex = tx["hash"].hex()
     sender = tx["from"]
     to = tx["to"]
+    bscscan_link = f"https://bscscan.com/tx/{hash_hex}"
     return (
-        f"BSC call match\n"
+        f"🔔 BSC call match\n"
         f"Block: {block_number}\n"
-        f"Tx: {hash_hex}\n"
+        f"Tx: `{hash_hex}`\n"
+        f"Link: {bscscan_link}\n"
         f"From: {sender}\n"
         f"To: {to}\n"
         f"Value: {value_bnb} BNB\n"
@@ -74,7 +81,8 @@ def process_block(w3: Web3, block_number: int) -> None:
         if to_addr.lower() != CONTRACT_ADDRESS:
             continue
 
-        if not input_data.lower().startswith(METHOD_ID):
+        input_hex = input_data.hex() if hasattr(input_data, 'hex') else str(input_data)
+        if not input_hex.lower().startswith(METHOD_ID):
             continue
 
         message = describe_tx(w3, block_number, tx)
@@ -99,16 +107,32 @@ def main() -> None:
         latest = head_now
         logger.info("Connected to BSC RPC. Starting from block %s", latest)
 
+    last_progress_log = time.time()
+    blocks_processed_since_log = 0
+
     while True:
         try:
             head = w3.eth.block_number
             if head > latest:
                 for block_number in range(latest + 1, head + 1):
                     process_block(w3, block_number)
+                    blocks_processed_since_log += 1
                 latest = head
                 if EXIT_AFTER_CATCHUP and head == latest:
                     logger.info("Reached chain head; EXIT_AFTER_CATCHUP enabled, exiting")
                     break
+            now = time.time()
+            if LOG_PROGRESS_INTERVAL > 0 and now - last_progress_log >= LOG_PROGRESS_INTERVAL:
+                logger.info(
+                    "Progress: last processed=%s, chain head=%s, blocks since last log=%s (watching %s %s)",
+                    latest,
+                    head,
+                    blocks_processed_since_log,
+                    CONTRACT_ADDRESS,
+                    METHOD_ID,
+                )
+                last_progress_log = now
+                blocks_processed_since_log = 0
             time.sleep(POLL_INTERVAL)
         except Exception:
             logger.exception("Error while polling; retrying soon")

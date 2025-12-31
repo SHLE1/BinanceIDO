@@ -16,6 +16,7 @@ Polls Binance Smart Chain for calls to a target contract and method ID, then not
    - `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`: Required to send notifications.
    - `START_BLOCK` (optional): Start scanning from this historical block number (useful for testing).
    - `EXIT_AFTER_CATCHUP` (optional, default `false`): If `true`, exit once the scanner catches up to chain head.
+   - `LOG_PROGRESS_INTERVAL` (optional, default `60`): Seconds between progress logs while scanning; set to `0` to disable.
 
 ## Run
 
