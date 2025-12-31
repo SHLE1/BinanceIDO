@@ -12,6 +12,8 @@ CONTRACT_ADDRESS = os.getenv("BSC_CONTRACT", "0x56a3bF66db83e59d13DFED48205Bb84c
 METHOD_ID = os.getenv("BSC_METHOD_ID", "0xfd5c9779").lower()
 BSC_RPC_URL = os.getenv("BSC_RPC_URL", "https://bsc-dataseed.binance.org")
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "3.0"))
+START_BLOCK = os.getenv("START_BLOCK")
+EXIT_AFTER_CATCHUP = os.getenv("EXIT_AFTER_CATCHUP", "false").lower() in {"1", "true", "yes"}
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -84,8 +86,15 @@ def main() -> None:
     if not w3.is_connected():
         raise RuntimeError(f"Cannot connect to BSC RPC at {BSC_RPC_URL}")
 
-    latest = w3.eth.block_number
-    logger.info("Connected to BSC RPC. Starting from block %s", latest)
+    head_now = w3.eth.block_number
+    if START_BLOCK is not None:
+        latest = int(START_BLOCK)
+        if latest > head_now:
+            raise ValueError(f"START_BLOCK {latest} is ahead of chain head {head_now}")
+        logger.info("Connected to BSC RPC. Starting from block %s (override)", latest)
+    else:
+        latest = head_now
+        logger.info("Connected to BSC RPC. Starting from block %s", latest)
 
     while True:
         try:
@@ -94,6 +103,9 @@ def main() -> None:
                 for block_number in range(latest + 1, head + 1):
                     process_block(w3, block_number)
                 latest = head
+                if EXIT_AFTER_CATCHUP and head == latest:
+                    logger.info("Reached chain head; EXIT_AFTER_CATCHUP enabled, exiting")
+                    break
             time.sleep(POLL_INTERVAL)
         except Exception:
             logger.exception("Error while polling; retrying soon")

@@ -14,6 +14,8 @@ Polls Binance Smart Chain for calls to a target contract and method ID, then not
    - `BSC_METHOD_ID` (optional): 4-byte method selector (with `0x` prefix). Defaults to `0xfd5c9779`.
    - `POLL_INTERVAL` (optional): Seconds between head checks. Defaults to `3`.
    - `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`: Required to send notifications.
+   - `START_BLOCK` (optional): Start scanning from this historical block number (useful for testing).
+   - `EXIT_AFTER_CATCHUP` (optional, default `false`): If `true`, exit once the scanner catches up to chain head.
 
 ## Run
 
