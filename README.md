@@ -57,3 +57,7 @@ uv run monitor.py
 脚本从当前最新区块开始，检查每个新区块中 `to` 地址与 `BSC_CONTRACT` 匹配且 `input` 以 `BSC_METHOD_ID` 开头的交易。当发现匹配时，会向配置的 Telegram 聊天发送消息。
 
 > **注意**：BSC 使用 PoA 共识机制，脚本已注入 `geth_poa_middleware` 以确保区块解析正常。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE) 开源协议。
