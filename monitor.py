@@ -1,7 +1,9 @@
+import json
 import os
 import time
 import logging
-from typing import Optional
+from pathlib import Path
+from typing import List, Optional
 
 from dotenv import load_dotenv
 import requests
@@ -13,8 +15,55 @@ from web3.middleware import geth_poa_middleware
 # Load environment variables from a local .env file if present
 load_dotenv()
 
-CONTRACT_ADDRESS = os.getenv("BSC_CONTRACT", "0x56a3bF66db83e59d13DFED48205Bb84c33B08d1b").lower()
-METHOD_ID = os.getenv("BSC_METHOD_ID", "0xfd5c9779").lower()
+DEFAULT_CONTRACT = "0x56a3bF66db83e59d13DFED48205Bb84c33B08d1b"
+DEFAULT_METHOD_ID = "0xfd5c9779"
+DEFAULT_FROM_ADDRESS = "0xEe7b429Ea01F76102f053213463D4e95D5D24AE8"
+DEFAULT_FROM_METHOD_ID = "0x40c10f19"
+
+
+def env_or_default(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value
+
+
+def is_hex(value: str) -> bool:
+    return all(char in "0123456789abcdef" for char in value)
+
+
+def normalize_address(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    cleaned = value.strip().lower()
+    if not cleaned:
+        return None
+    if not cleaned.startswith("0x"):
+        cleaned = f"0x{cleaned}"
+    if len(cleaned) != 42 or not is_hex(cleaned[2:]):
+        return None
+    return cleaned
+
+
+def normalize_method_id(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    cleaned = value.strip().lower()
+    if not cleaned:
+        return None
+    if not cleaned.startswith("0x"):
+        cleaned = f"0x{cleaned}"
+    if len(cleaned) != 10 or not is_hex(cleaned[2:]):
+        return None
+    return cleaned
+
+
+ENV_CONTRACT = env_or_default("BSC_CONTRACT", DEFAULT_CONTRACT)
+ENV_METHOD_ID = env_or_default("BSC_METHOD_ID", DEFAULT_METHOD_ID)
+ENV_FROM_ADDRESS = env_or_default("BSC_FROM_ADDRESS", DEFAULT_FROM_ADDRESS)
+ENV_FROM_METHOD_ID = env_or_default("BSC_FROM_METHOD_ID", DEFAULT_FROM_METHOD_ID)
+RULES_FILE = os.getenv("BSC_RULES_FILE", "config/monitor_rules.json")
+
 BSC_RPC_URL = os.getenv("BSC_RPC_URL", "https://bsc-dataseed.binance.org")
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "3.0"))
 START_BLOCK = os.getenv("START_BLOCK")
@@ -32,6 +81,134 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def normalize_input_hex(input_data: Optional[str]) -> str:
+    if input_data is None:
+        return ""
+    if hasattr(input_data, "hex"):
+        value = input_data.hex()
+    else:
+        value = str(input_data)
+    if not value:
+        return ""
+    value = value.lower()
+    if not value.startswith("0x"):
+        value = f"0x{value}"
+    return value
+
+
+def extract_method_id(input_hex: str) -> str:
+    if not input_hex or input_hex == "0x":
+        return ""
+    if not input_hex.startswith("0x"):
+        input_hex = f"0x{input_hex}"
+    return input_hex[:10].lower()
+
+
+def load_rules_file(path: Path) -> dict:
+    rules = {"to_rules": [], "from_rules": []}
+    if not path.exists():
+        return rules
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception as exc:
+        logger.warning("Failed to read rules file %s: %s", path, exc)
+        return rules
+    if not isinstance(data, dict):
+        logger.warning("Rules file %s is not a JSON object", path)
+        return rules
+    to_rules = data.get("to_rules", [])
+    from_rules = data.get("from_rules", [])
+    rules["to_rules"] = to_rules if isinstance(to_rules, list) else []
+    rules["from_rules"] = from_rules if isinstance(from_rules, list) else []
+    return rules
+
+
+def warn_invalid_env(name: str, raw: str, normalized: Optional[str]) -> None:
+    if raw and raw.strip() and normalized is None:
+        logger.warning("Invalid %s: %s", name, raw)
+
+
+def normalize_rule_list(items: list, address_key: str) -> List[dict]:
+    normalized: List[dict] = []
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            logger.warning("Invalid %s rule at index %s: expected object", address_key, index)
+            continue
+        address = normalize_address(item.get(address_key))
+        method_id = normalize_method_id(item.get("method_id"))
+        if not address or not method_id:
+            logger.warning(
+                "Invalid %s rule at index %s: address=%s method_id=%s",
+                address_key,
+                index,
+                item.get(address_key),
+                item.get("method_id"),
+            )
+            continue
+        label = item.get("label")
+        if isinstance(label, str):
+            label = label.strip()
+        else:
+            label = None
+        rule = {address_key: address, "method_id": method_id}
+        if label:
+            rule["label"] = label
+        normalized.append(rule)
+    return normalized
+
+
+def build_active_rules(path: Path) -> dict:
+    raw_rules = load_rules_file(path)
+    to_rules = normalize_rule_list(raw_rules.get("to_rules", []), "to")
+    from_rules = normalize_rule_list(raw_rules.get("from_rules", []), "from")
+
+    rules = {"to_rules": [], "from_rules": []}
+    seen_to = set()
+    seen_from = set()
+
+    def add_to_rule(address: str, method_id: str, label: Optional[str] = None) -> None:
+        key = (address, method_id)
+        if key in seen_to:
+            return
+        seen_to.add(key)
+        entry = {"to": address, "method_id": method_id}
+        if label:
+            entry["label"] = label
+        rules["to_rules"].append(entry)
+
+    def add_from_rule(address: str, method_id: str, label: Optional[str] = None) -> None:
+        key = (address, method_id)
+        if key in seen_from:
+            return
+        seen_from.add(key)
+        entry = {"from": address, "method_id": method_id}
+        if label:
+            entry["label"] = label
+        rules["from_rules"].append(entry)
+
+    for rule in to_rules:
+        add_to_rule(rule["to"], rule["method_id"], rule.get("label"))
+    for rule in from_rules:
+        add_from_rule(rule["from"], rule["method_id"], rule.get("label"))
+
+    env_to = normalize_address(ENV_CONTRACT)
+    env_method = normalize_method_id(ENV_METHOD_ID)
+    warn_invalid_env("BSC_CONTRACT", ENV_CONTRACT, env_to)
+    warn_invalid_env("BSC_METHOD_ID", ENV_METHOD_ID, env_method)
+    if env_to and env_method:
+        add_to_rule(env_to, env_method)
+
+    env_from = normalize_address(ENV_FROM_ADDRESS)
+    env_from_method = normalize_method_id(ENV_FROM_METHOD_ID)
+    warn_invalid_env("BSC_FROM_ADDRESS", ENV_FROM_ADDRESS, env_from)
+    warn_invalid_env("BSC_FROM_METHOD_ID", ENV_FROM_METHOD_ID, env_from_method)
+    if env_from and env_from_method:
+        add_from_rule(env_from, env_from_method)
+
+    return rules
+
+
 def send_telegram(text: str) -> None:
     """Send a Telegram message if credentials are configured."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -44,13 +221,15 @@ def send_telegram(text: str) -> None:
         logger.warning("Failed to send Telegram message: %s", resp.text)
 
 
-def describe_tx(w3: Web3, block_number: int, tx) -> str:
+def describe_tx(w3: Web3, block_number: int, tx, method_id: str, match_reasons: List[str]) -> str:
     """Create a concise message for Telegram."""
     value_bnb = w3.from_wei(tx["value"], "ether")
     hash_hex = tx["hash"].hex()
     sender = tx["from"]
     to = tx["to"]
     bscscan_link = f"https://bscscan.com/tx/{hash_hex}"
+    match_label = ", ".join(match_reasons)
+    method_display = method_id or "n/a"
     return (
         f"🔔 BSC call match\n"
         f"Block: {block_number}\n"
@@ -59,11 +238,19 @@ def describe_tx(w3: Web3, block_number: int, tx) -> str:
         f"From: {sender}\n"
         f"To: {to}\n"
         f"Value: {value_bnb} BNB\n"
-        f"MethodID: {METHOD_ID}"
+        f"Matched: {match_label}\n"
+        f"MethodID: {method_display}"
     )
 
 
-def process_block(w3: Web3, block_number: int) -> None:
+def format_reason(prefix: str, rule: dict) -> str:
+    label = rule.get("label")
+    if label:
+        return f"{prefix}:{label}"
+    return prefix
+
+
+def process_block(w3: Web3, block_number: int, rules: dict) -> None:
     """Load a block and notify on matching transactions."""
     try:
         block = w3.eth.get_block(block_number, full_transactions=True)
@@ -71,22 +258,47 @@ def process_block(w3: Web3, block_number: int) -> None:
         logger.warning("Block %s not found yet; will retry", block_number)
         return
 
+    to_rules = rules.get("to_rules", [])
+    from_rules = rules.get("from_rules", [])
+    if not to_rules and not from_rules:
+        return
+
     txs = block.get("transactions", [])
     for tx in txs:
         to_addr = tx.get("to")
         input_data: Optional[str] = tx.get("input")
-        if not to_addr or not input_data:
+        if not input_data:
             continue
 
-        if to_addr.lower() != CONTRACT_ADDRESS:
+        input_hex = normalize_input_hex(input_data)
+        if not input_hex or input_hex == "0x":
+            continue
+        method_id = extract_method_id(input_hex)
+
+        match_reasons: List[str] = []
+        if to_addr:
+            to_addr_lower = to_addr.lower()
+            for rule in to_rules:
+                if to_addr_lower == rule["to"] and method_id == rule["method_id"]:
+                    match_reasons.append(format_reason("to+method", rule))
+
+        from_addr = tx.get("from")
+        if from_addr:
+            from_addr_lower = from_addr.lower()
+            for rule in from_rules:
+                if from_addr_lower == rule["from"] and method_id == rule["method_id"]:
+                    match_reasons.append(format_reason("from+method", rule))
+
+        if not match_reasons:
             continue
 
-        input_hex = input_data.hex() if hasattr(input_data, 'hex') else str(input_data)
-        if not input_hex.lower().startswith(METHOD_ID):
-            continue
-
-        message = describe_tx(w3, block_number, tx)
-        logger.info("Match found in block %s tx %s", block_number, tx["hash"].hex())
+        message = describe_tx(w3, block_number, tx, method_id, match_reasons)
+        logger.info(
+            "Match found in block %s tx %s (%s)",
+            block_number,
+            tx["hash"].hex(),
+            ", ".join(match_reasons),
+        )
         send_telegram(message)
 
 
@@ -109,13 +321,15 @@ def main() -> None:
 
     last_progress_log = time.time()
     blocks_processed_since_log = 0
+    rules_path = Path(RULES_FILE)
 
     while True:
         try:
+            rules = build_active_rules(rules_path)
             head = w3.eth.block_number
             if head > latest:
                 for block_number in range(latest + 1, head + 1):
-                    process_block(w3, block_number)
+                    process_block(w3, block_number, rules)
                     blocks_processed_since_log += 1
                 latest = head
                 if EXIT_AFTER_CATCHUP and head == latest:
@@ -124,12 +338,13 @@ def main() -> None:
             now = time.time()
             if LOG_PROGRESS_INTERVAL > 0 and now - last_progress_log >= LOG_PROGRESS_INTERVAL:
                 logger.info(
-                    "Progress: last processed=%s, chain head=%s, blocks since last log=%s (watching %s %s)",
+                    "Progress: last processed=%s, chain head=%s, blocks since last log=%s (watching to_rules=%s, from_rules=%s, rules_file=%s)",
                     latest,
                     head,
                     blocks_processed_since_log,
-                    CONTRACT_ADDRESS,
-                    METHOD_ID,
+                    len(rules.get("to_rules", [])),
+                    len(rules.get("from_rules", [])),
+                    rules_path,
                 )
                 last_progress_log = now
                 blocks_processed_since_log = 0
