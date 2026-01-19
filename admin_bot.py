@@ -22,6 +22,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+USAGE_ADD_TO = "/add_to <to_address> <method_id> [label]"
+USAGE_ADD_FROM = "/add_from <from_address> <method_id> [label]"
+USAGE_REMOVE = "/remove <to|from> <index>"
+EXAMPLE_ADD_TO = "/add_to 0x56a3bf66db83e59d13dfed48205bb84c33b08d1b 0xfd5c9779 IDO created"
+EXAMPLE_ADD_FROM = "/add_from 0xee7b429ea01f76102f053213463d4e95d5d24ae8 0x40c10f19 Prime Key minted"
+EXAMPLE_REMOVE = "/remove to 1"
+
 
 def is_hex(value: str) -> bool:
     return all(char in "0123456789abcdef" for char in value)
@@ -61,6 +68,42 @@ def send_message(chat_id: str, text: str) -> None:
     resp = requests.post(url, json={"chat_id": chat_id, "text": text})
     if not resp.ok:
         logger.warning("Failed to send Telegram message: %s", resp.text)
+
+
+def format_error(title: str, usage: Optional[str] = None, example: Optional[str] = None) -> str:
+    lines = [f"❌ {title}"]
+    if usage:
+        lines.append(f"用法: {usage}")
+    if example:
+        lines.append(f"示例: {example}")
+    return "\n".join(lines)
+
+
+def format_success(title: str, lines: Optional[list] = None) -> str:
+    message_lines = [f"✅ {title}"]
+    if lines:
+        message_lines.extend(lines)
+    return "\n".join(message_lines)
+
+
+def format_warning(title: str, lines: Optional[list] = None) -> str:
+    message_lines = [f"⚠️ {title}"]
+    if lines:
+        message_lines.extend(lines)
+    return "\n".join(message_lines)
+
+
+def format_rule_block(kind: str, rule: dict, index: Optional[int] = None) -> list:
+    label = rule.get("label") or "未命名"
+    address_key = "to" if kind == "to" else "from"
+    address = rule.get(address_key, "-")
+    method_id = rule.get("method_id", "-")
+    header = f"{index}) {label}" if index is not None else label
+    return [
+        header,
+        f"   {address_key}: {address}",
+        f"   method: {method_id}",
+    ]
 
 
 def set_my_commands() -> None:
@@ -117,7 +160,8 @@ def add_rule(kind: str, address: str, method_id: str, label: Optional[str]) -> s
 
     for rule in rule_list:
         if rule.get(address_key) == address and rule.get("method_id") == method_id:
-            return "Rule already exists."
+            lines = format_rule_block(kind, rule)
+            return format_warning("规则已存在", lines)
 
     entry = {address_key: address, "method_id": method_id}
     if label:
@@ -125,7 +169,7 @@ def add_rule(kind: str, address: str, method_id: str, label: Optional[str]) -> s
     rule_list.append(entry)
     rules[list_key] = rule_list
     save_rules(rules_path, rules)
-    return "Rule added."
+    return format_success("已添加规则", format_rule_block(kind, entry))
 
 
 def remove_rule(kind: str, index: int) -> str:
@@ -134,49 +178,52 @@ def remove_rule(kind: str, index: int) -> str:
     list_key = "to_rules" if kind == "to" else "from_rules"
     rule_list = rules.get(list_key, [])
     if index < 1 or index > len(rule_list):
-        return "Index out of range."
+        return format_error("序号超出范围", USAGE_REMOVE, EXAMPLE_REMOVE)
     removed = rule_list.pop(index - 1)
     rules[list_key] = rule_list
     save_rules(rules_path, rules)
-    label = removed.get("label")
-    if label:
-        return f"Removed {kind} rule #{index} ({label})."
-    return f"Removed {kind} rule #{index}."
+    lines = format_rule_block(kind, removed)
+    lines.insert(0, f"序号: {index}")
+    return format_success(f"已删除 {kind} 规则", lines)
 
 
 def format_rules(rules: dict) -> str:
     to_rules = rules.get("to_rules", [])
     from_rules = rules.get("from_rules", [])
     lines = []
-    lines.append("to_rules:")
+    lines.append("🧾 规则列表")
+    lines.append("")
+    lines.append(f"to_rules ({len(to_rules)}):")
     if to_rules:
         for idx, rule in enumerate(to_rules, start=1):
-            label = rule.get("label")
-            suffix = f" label={label}" if label else ""
-            lines.append(f"{idx}. {rule.get('to')} {rule.get('method_id')}{suffix}")
+            lines.extend(format_rule_block("to", rule, idx))
+            lines.append("")
     else:
-        lines.append("(empty)")
+        lines.append("  （暂无）")
 
-    lines.append("")
-    lines.append("from_rules:")
+    lines.append(f"from_rules ({len(from_rules)}):")
     if from_rules:
         for idx, rule in enumerate(from_rules, start=1):
-            label = rule.get("label")
-            suffix = f" label={label}" if label else ""
-            lines.append(f"{idx}. {rule.get('from')} {rule.get('method_id')}{suffix}")
+            lines.extend(format_rule_block("from", rule, idx))
+            lines.append("")
     else:
-        lines.append("(empty)")
-    return "\n".join(lines)
+        lines.append("  （暂无）")
+    return "\n".join(line for line in lines if line != "")
 
 
 def help_text() -> str:
     return (
-        "Commands:\n"
-        "/add_to <to_address> <method_id> [label]\n"
-        "/add_from <from_address> <method_id> [label]\n"
-        "/list\n"
-        "/remove <to|from> <index>\n"
-        "/help"
+        "🧭 指令帮助\n"
+        f"1) {USAGE_ADD_TO}\n"
+        f"   示例: {EXAMPLE_ADD_TO}\n"
+        f"2) {USAGE_ADD_FROM}\n"
+        f"   示例: {EXAMPLE_ADD_FROM}\n"
+        "3) /list\n"
+        "   示例: /list\n"
+        f"4) {USAGE_REMOVE}\n"
+        f"   示例: {EXAMPLE_REMOVE}\n"
+        "5) /help\n"
+        "   示例: /help"
     )
 
 
@@ -196,28 +243,34 @@ def handle_command(text: str) -> Optional[str]:
         return format_rules(rules)
     if command in {"/add_to", "/add_from"}:
         if len(args) < 2:
-            return "Usage: /add_to <to_address> <method_id> [label]"
+            usage = USAGE_ADD_TO if command == "/add_to" else USAGE_ADD_FROM
+            example = EXAMPLE_ADD_TO if command == "/add_to" else EXAMPLE_ADD_FROM
+            return format_error("参数不足", usage, example)
         address = normalize_address(args[0])
         method_id = normalize_method_id(args[1])
         label = " ".join(args[2:]).strip() if len(args) > 2 else None
         if not address:
-            return "Invalid address."
+            usage = USAGE_ADD_TO if command == "/add_to" else USAGE_ADD_FROM
+            example = EXAMPLE_ADD_TO if command == "/add_to" else EXAMPLE_ADD_FROM
+            return format_error("地址格式不正确", usage, example)
         if not method_id:
-            return "Invalid method_id."
+            usage = USAGE_ADD_TO if command == "/add_to" else USAGE_ADD_FROM
+            example = EXAMPLE_ADD_TO if command == "/add_to" else EXAMPLE_ADD_FROM
+            return format_error("方法 ID 格式不正确", usage, example)
         kind = "to" if command == "/add_to" else "from"
         return add_rule(kind, address, method_id, label)
     if command == "/remove":
         if len(args) < 2:
-            return "Usage: /remove <to|from> <index>"
+            return format_error("参数不足", USAGE_REMOVE, EXAMPLE_REMOVE)
         kind = args[0].lower()
         if kind not in {"to", "from"}:
-            return "Usage: /remove <to|from> <index>"
+            return format_error("类型必须是 to 或 from", USAGE_REMOVE, EXAMPLE_REMOVE)
         try:
             index = int(args[1])
         except ValueError:
-            return "Index must be a number."
+            return format_error("序号必须是数字", USAGE_REMOVE, EXAMPLE_REMOVE)
         return remove_rule(kind, index)
-    return "Unknown command. Use /help."
+    return format_error("未知命令", "/help", "/help")
 
 
 def main() -> None:
@@ -253,7 +306,7 @@ def main() -> None:
                     continue
                 chat_id = str(message.get("chat", {}).get("id", ""))
                 if chat_id != authorized_chat_id:
-                    send_message(chat_id, "Unauthorized.")
+                    send_message(chat_id, "🚫 未授权的聊天。")
                     continue
                 text = message.get("text", "")
                 response = handle_command(text)

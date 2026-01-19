@@ -15,19 +15,6 @@ from web3.middleware import geth_poa_middleware
 # Load environment variables from a local .env file if present
 load_dotenv()
 
-DEFAULT_CONTRACT = "0x56a3bF66db83e59d13DFED48205Bb84c33B08d1b"
-DEFAULT_METHOD_ID = "0xfd5c9779"
-DEFAULT_FROM_ADDRESS = "0xEe7b429Ea01F76102f053213463D4e95D5D24AE8"
-DEFAULT_FROM_METHOD_ID = "0x40c10f19"
-
-
-def env_or_default(name: str, default: str) -> str:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value
-
-
 def is_hex(value: str) -> bool:
     return all(char in "0123456789abcdef" for char in value)
 
@@ -58,10 +45,6 @@ def normalize_method_id(value: Optional[str]) -> Optional[str]:
     return cleaned
 
 
-ENV_CONTRACT = env_or_default("BSC_CONTRACT", DEFAULT_CONTRACT)
-ENV_METHOD_ID = env_or_default("BSC_METHOD_ID", DEFAULT_METHOD_ID)
-ENV_FROM_ADDRESS = env_or_default("BSC_FROM_ADDRESS", DEFAULT_FROM_ADDRESS)
-ENV_FROM_METHOD_ID = env_or_default("BSC_FROM_METHOD_ID", DEFAULT_FROM_METHOD_ID)
 RULES_FILE = os.getenv("BSC_RULES_FILE", "config/monitor_rules.json")
 
 BSC_RPC_URL = os.getenv("BSC_RPC_URL", "https://bsc-dataseed.binance.org")
@@ -122,11 +105,6 @@ def load_rules_file(path: Path) -> dict:
     rules["to_rules"] = to_rules if isinstance(to_rules, list) else []
     rules["from_rules"] = from_rules if isinstance(from_rules, list) else []
     return rules
-
-
-def warn_invalid_env(name: str, raw: str, normalized: Optional[str]) -> None:
-    if raw and raw.strip() and normalized is None:
-        logger.warning("Invalid %s: %s", name, raw)
 
 
 def normalize_rule_list(items: list, address_key: str) -> List[dict]:
@@ -192,20 +170,6 @@ def build_active_rules(path: Path) -> dict:
     for rule in from_rules:
         add_from_rule(rule["from"], rule["method_id"], rule.get("label"))
 
-    env_to = normalize_address(ENV_CONTRACT)
-    env_method = normalize_method_id(ENV_METHOD_ID)
-    warn_invalid_env("BSC_CONTRACT", ENV_CONTRACT, env_to)
-    warn_invalid_env("BSC_METHOD_ID", ENV_METHOD_ID, env_method)
-    if env_to and env_method:
-        add_to_rule(env_to, env_method)
-
-    env_from = normalize_address(ENV_FROM_ADDRESS)
-    env_from_method = normalize_method_id(ENV_FROM_METHOD_ID)
-    warn_invalid_env("BSC_FROM_ADDRESS", ENV_FROM_ADDRESS, env_from)
-    warn_invalid_env("BSC_FROM_METHOD_ID", ENV_FROM_METHOD_ID, env_from_method)
-    if env_from and env_from_method:
-        add_from_rule(env_from, env_from_method)
-
     return rules
 
 
@@ -221,33 +185,45 @@ def send_telegram(text: str) -> None:
         logger.warning("Failed to send Telegram message: %s", resp.text)
 
 
-def describe_tx(w3: Web3, block_number: int, tx, method_id: str, match_reasons: List[str]) -> str:
+def format_match_reasons(match_reasons: List[dict]) -> str:
+    parts = []
+    for reason in match_reasons:
+        kind = reason.get("kind")
+        label = reason.get("label")
+        if not kind:
+            continue
+        if label:
+            parts.append(f"{kind} ({label})")
+        else:
+            parts.append(kind)
+    return ", ".join(parts) if parts else "n/a"
+
+
+def describe_tx(w3: Web3, block_number: int, tx, method_id: str, match_reasons: List[dict]) -> str:
     """Create a concise message for Telegram."""
     value_bnb = w3.from_wei(tx["value"], "ether")
     hash_hex = tx["hash"].hex()
     sender = tx["from"]
     to = tx["to"]
     bscscan_link = f"https://bscscan.com/tx/{hash_hex}"
-    match_label = ", ".join(match_reasons)
+    match_label = format_match_reasons(match_reasons)
     method_display = method_id or "n/a"
     return (
-        f"🔔 BSC call match\n"
-        f"Block: {block_number}\n"
-        f"Tx: `{hash_hex}`\n"
-        f"Link: {bscscan_link}\n"
+        f"🔔 BSC 监控命中\n"
+        f"规则: {match_label}\n"
+        f"区块: {block_number}\n"
+        f"交易: `{hash_hex}`\n"
+        f"链接: {bscscan_link}\n"
         f"From: {sender}\n"
         f"To: {to}\n"
-        f"Value: {value_bnb} BNB\n"
-        f"Matched: {match_label}\n"
-        f"MethodID: {method_display}"
+        f"Method: {method_display}\n"
+        f"Value: {value_bnb} BNB"
     )
 
 
-def format_reason(prefix: str, rule: dict) -> str:
+def build_match_reason(kind: str, rule: dict) -> dict:
     label = rule.get("label")
-    if label:
-        return f"{prefix}:{label}"
-    return prefix
+    return {"kind": kind, "label": label}
 
 
 def process_block(w3: Web3, block_number: int, rules: dict) -> None:
@@ -275,19 +251,19 @@ def process_block(w3: Web3, block_number: int, rules: dict) -> None:
             continue
         method_id = extract_method_id(input_hex)
 
-        match_reasons: List[str] = []
+        match_reasons: List[dict] = []
         if to_addr:
             to_addr_lower = to_addr.lower()
             for rule in to_rules:
                 if to_addr_lower == rule["to"] and method_id == rule["method_id"]:
-                    match_reasons.append(format_reason("to+method", rule))
+                    match_reasons.append(build_match_reason("to+method", rule))
 
         from_addr = tx.get("from")
         if from_addr:
             from_addr_lower = from_addr.lower()
             for rule in from_rules:
                 if from_addr_lower == rule["from"] and method_id == rule["method_id"]:
-                    match_reasons.append(format_reason("from+method", rule))
+                    match_reasons.append(build_match_reason("from+method", rule))
 
         if not match_reasons:
             continue
@@ -297,7 +273,7 @@ def process_block(w3: Web3, block_number: int, rules: dict) -> None:
             "Match found in block %s tx %s (%s)",
             block_number,
             tx["hash"].hex(),
-            ", ".join(match_reasons),
+            format_match_reasons(match_reasons),
         )
         send_telegram(message)
 

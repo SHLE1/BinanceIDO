@@ -1,4 +1,16 @@
 {
-  "to_rules": [],
-  "from_rules": []
+  "to_rules": [
+    {
+      "to": "0x56a3bf66db83e59d13dfed48205bb84c33b08d1b",
+      "method_id": "0xfd5c9779",
+      "label": "IDO created"
+    }
+  ],
+  "from_rules": [
+    {
+      "from": "0xee7b429ea01f76102f053213463d4e95d5d24ae8",
+      "method_id": "0x40c10f19",
+      "label": "Prime Key minted"
+    }
+  ]
 }
